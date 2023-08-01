@@ -1,33 +1,64 @@
-// create web server
+// Create web server
+const express = require('express')
+const bodyParser = require('body-parser')
+const cors = require('cors')
+const axios = require('axios')
+const { randomBytes } = require('crypto')
 
-// import module
-const express = require('express');
-const router = express.Router();
-const commentsController = require('../controllers/commentsController');
-const { body, validationResult } = require('express-validator');
+const app = express()
+app.use(bodyParser.json())
+app.use(cors())
 
-// create route
-router.get('/', commentsController.index);
+const commentsByPostId = {}
 
-router.get('/create', commentsController.create);
+app.get('/posts/:id/comments', (req, res) => {
+    res.send(commentsByPostId[req.params.id] || [])
+})
 
-router.post('/store', [
-    body('name').not().isEmpty().withMessage('Name is required'),
-    body('email').not().isEmpty().withMessage('Email is required'),
-    body('content').not().isEmpty().withMessage('Content is required'),
-], commentsController.store);
+app.post('/posts/:id/comments', async (req, res) => {
+    const commentId = randomBytes(4).toString('hex')
+    const { content } = req.body
 
-router.get('/:id/edit', commentsController.edit);
+    const comments = commentsByPostId[req.params.id] || []
+    comments.push({ id: commentId, content, status: 'pending' })
 
-router.post('/update', [
-    body('name').not().isEmpty().withMessage('Name is required'),
-    body('email').not().isEmpty().withMessage('Email is required'),
-    body('content').not().isEmpty().withMessage('Content is required'),
-], commentsController.update);
+    commentsByPostId[req.params.id] = comments
 
-router.get('/:id/delete', commentsController.delete);
+    await axios.post('http://event-bus-srv:4005/events', {
+        type: 'CommentCreated',
+        data: {
+            id: commentId,
+            content,
+            postId: req.params.id,
+            status: 'pending'
+        }
+    })
 
-// export router
-module.exports = router;
+    res.status(201).send(comments)
+})
 
-// this code is ok
+app.post('/events', async (req, res) => {
+    console.log('Event received:', req.body.type)
+
+    const { type, data } = req.body
+    if (type === 'CommentModerated') {
+        const { postId, id, status, content } = data
+        const comments = commentsByPostId[postId]
+
+        const comment = comments.find(comment => {
+            return comment.id === id
+        })
+        comment.status = status
+
+        await axios.post('http://event-bus-srv:4005/events', {
+            type: 'CommentUpdated',
+            data: { id, postId, status, content }
+        })
+    }
+
+    res.send({})
+})
+
+app.listen(4001, () => {
+    console.log('Listening on 4001')
+})
